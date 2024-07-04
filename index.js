@@ -1,6 +1,7 @@
 const { Client, GatewayIntentBits, Events, Collection, Partials, WebhookClient, EmbedBuilder, ActivityType } = require('discord.js');
 const mongoose = require('mongoose');
 const UserMessageCount = require('./schemas/userMessageCount'); // Adjust the path as necessary
+const LogChannel = require('./schemas/logChannel'); // Adjust path as necessary
 
 const PREFIX = '.';
 
@@ -33,7 +34,7 @@ client.on('ready', async () => {
     mongoose.connect(client.config.DATABASE)
         .then(() => client.logs.info('Successfully connected to MongoDB'))
         .catch(err => client.logs.error('Failed to connect to MongoDB', err));
-    mongoose.set('strictQuery', true);
+    mongoose.set('strictQuery', false);
 
     async function updatePresence() {
         client.user.setPresence({
@@ -101,7 +102,7 @@ async function InteractionHandler(interaction, type) {
   if (!component) {
       await interaction.reply({
           content: `**There was an error while interacting with \`${type}\`.`,
-          ephemeral: true
+          ephemeral: false
       }).catch(() => { });
       client.logs.error(`${type} not found: ${interaction.customId}`);
       return;
@@ -112,7 +113,7 @@ async function InteractionHandler(interaction, type) {
   } catch (reason) {
       await interaction.reply({
           content: ":x: **You don't have permission to use this command.**",
-          ephemeral: true
+          ephemeral: false
       }).catch(() => { });
       return;
   }
@@ -122,7 +123,7 @@ async function InteractionHandler(interaction, type) {
   } catch (reason) {
       await interaction.reply({
           content: reason,
-          ephemeral: true
+          ephemeral: false
       }).catch(() => { });
       return;
   }
@@ -130,7 +131,7 @@ async function InteractionHandler(interaction, type) {
   try {
       CheckPermissions(component.userPerms, interaction.member);
   } catch (permissions) {
-      await interaction.reply({ content: `:x: **You require the permissions:** \`${permissions}\``, ephemeral: true }).catch(() => { });
+      await interaction.reply({ content: `:x: **You require the permissions:** \`${permissions}\``, ephemeral: false }).catch(() => { });
       return;
   }
 
@@ -138,7 +139,7 @@ async function InteractionHandler(interaction, type) {
       const botMember = interaction.guild.members.cache.get(client.user.id) ?? await interaction.guild.members.fetch(client.user.id);
       CheckPermissions(component.clientPerms, botMember);
   } catch (permissions) {
-    await interaction.reply({ content: `:x: **Messager requires the permissions:** \`${permissions}\``,  ephemeral: true }).catch(() => { });
+    await interaction.reply({ content: `:x: **Messager requires the permissions:** \`${permissions}\``,  ephemeral: false }).catch(() => { });
     return;
   }
 
@@ -150,13 +151,13 @@ async function InteractionHandler(interaction, type) {
       }
   } catch (error) {
       client.logs.error(error.stack);
-      await interaction.deferReply({ ephemeral: true }).catch(() => { });
+      await interaction.deferReply({ ephemeral: false }).catch(() => { });
       await interaction.editReply({
           content: `Command execution error:\n\`\`\`${error}\`\`\``,
           embeds: [],
           components: [],
           files: [],
-          ephemeral: true
+          ephemeral: false
       }).catch(() => { });
   }
 }
@@ -179,13 +180,13 @@ client.on('messageCreate', async function (message) {
   const command = client.messages.get(name);
   if (!command) {
       //client.logs.error(`Command not found: ${name}`);
-      //return await message.reply(`:x: **Command execution error.**`).catch(() => { });
+      return await message.reply(`:x: **Command execution error.**`).catch(() => { });
   }
 
   try {
       CheckAccess(command.roles, command.users, message.member, message.author);
   } catch (reason) {
-      await message.reply(":x: **You don't have permission to use this command.**").catch(() => { });
+      //await message.reply(":x: **You don't have permission to use this command.**").catch(() => { });
       return;
   }
 
@@ -199,14 +200,14 @@ client.on('messageCreate', async function (message) {
   try {
       CheckPermissions(command.userPerms, message.member);
   } catch (permissions) {
-    await message.reply({ content: `:x: **You require the permissions:** \`${permissions}\``, ephemeral: true }).catch(() => { });
+    await message.reply({ content: `:x: **You require the permissions:** \`${permissions}\``, ephemeral: false }).catch(() => { });
     return;
   }
 
   try {
       CheckPermissions(command.clientPerms, message.guild.members.me);
   } catch (permissions) {
-      await message.reply({ content: `:x: **Messager requires the permissions:** \`${permissions}\``,  ephemeral: true }).catch(() => { });
+      await message.reply({ content: `:x: **Messager requires the permissions:** \`${permissions}\``,  ephemeral: false }).catch(() => { });
       return;
   }
 
@@ -221,87 +222,106 @@ client.on('messageCreate', async function (message) {
   }
 });
 
+// Function to delay execution for a given time
+const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+// Function to send log message with delay
+async function sendLogWithDelay(webhookClient, embed) {
+  try {
+    await webhookClient.send({ embeds: [embed] });
+    await delay(3000); // Delay of 1 second (1000 milliseconds)
+  } catch (error) {
+    console.error('Error sending log message:', error);
+  }
+}
+
+// Log new messages
 client.on('messageCreate', async message => {
-    if (message.author.bot) return;
+  if (!message.guild || message.author?.bot) return; // Skip messages that are not in guilds or from bots
+  
+  const logChannelData = await LogChannel.findOne({ guildId: message.guild.id });
+  if (!logChannelData) return; // Log channel not set
 
-    const guildId = message.guild.id;
-    const userId = message.author.id;
-    const username = message.author.username;
-    const messageContent = message.content;
+  const { webhookId, webhookToken } = logChannelData;
 
-    let userMessageData = await UserMessageCount.findOneAndUpdate(
-        { userId, guildId },
-        {
-            $inc: { messageCount: 1 },
-            $set: {
-                username,
-                'lastMessage.content': messageContent,
-                'lastMessage.timestamp': new Date()
-            }
-        },
-        { upsert: true, new: true }
-    );
+  try {
+    const webhookClient = new WebhookClient({ id: webhookId, token: webhookToken });
 
-    if (userMessageData.messageCount % 200 === 0) {
-        // Randomly generate points between 50 and 65
-        const pointsEarned = Math.floor(Math.random() * (65 - 50 + 1)) + 50;
-        
-        userMessageData.points += pointsEarned; 
-        userMessageData.points += pointsEarned; // Increment points by the randomized value
-        await userMessageData.save();
+    const messageLink = `https://discord.com/channels/${message.guild.id}/${message.channel.id}/${message.id}`;
+    const embed = new EmbedBuilder()
+      .setColor('Green')
+      .setTitle('<:GreenMessage:1258522349645336586> **Message Created**')
+      .setURL(messageLink)
+      .setAuthor({ name: `${message.author.tag} • ${message.author.id}`, iconURL: message.author.displayAvatarURL() })
+      .setDescription(`**Content:** \`\`\`${message.content}\`\`\``)
+      .addFields(
+        { name: '**Channel**', value: message.channel.toString(), inline: false },
+        { name: '**Message ID**', value: message.id, inline: false },
+        { name: '**Message Sent**', value: `<t:${Math.floor(message.createdAt.getTime() / 1000)}:F> (<t:${Math.floor(message.createdAt.getTime() / 1000)}:R>)`, inline: false }
+      );
 
-        const embed = new EmbedBuilder()
-            .setColor('#f8aa35')
-            .setDescription(`You have earned **${pointsEarned}** points for reaching **${userMessageData.messageCount.toLocaleString()}** messages.`)
-
-        await message.channel.send({ content: `<@${userId}>`, embeds: [embed] });
-
-        try {
-            const user = await message.author.fetch();
-            const dmEmbed = new EmbedBuilder()
-                .setColor('#f8aa35')
-                .setTitle('**Messager Reminder**')
-                .setDescription(`Congratulations, you've earned **${pointsEarned}** points! Use \`/store\` and see what you can buy with your points!`)
-
-            await user.send({ embeds: [dmEmbed] });
-        } catch (err) {
-            console.error(`Failed to send DM to user ${userId}:`, err);
-        }
-    }
+    await sendLogWithDelay(webhookClient, embed);
+  } catch (error) {
+    console.error('Error sending log message:', error);
+  }
 });
 
-const LogChannel = require('./schemas/logChannel'); // Adjust the path as necessary
+// Log edited messages
+client.on('messageUpdate', async (oldMessage, newMessage) => {
+  if (!oldMessage.guild || oldMessage.author?.bot || oldMessage.content === newMessage.content) return; // Skip messages that are not in guilds, from bots, or if content didn't change
 
-module.exports = {
-  name: Events.MessageCreate,
-  async execute(message) {
-    if (message.author.bot) return;
+  const logChannelData = await LogChannel.findOne({ guildId: oldMessage.guild.id });
+  if (!logChannelData) return; // Log channel not set
 
-    const logChannelData = await LogChannel.findOne({ guildId: message.guild.id });
-    if (!logChannelData) return;
+  const { webhookId, webhookToken } = logChannelData;
 
-    const { webhookId, webhookToken } = logChannelData;
+  try {
+    const webhookClient = new WebhookClient({ id: webhookId, token: webhookToken });
 
-    try {
-      const webhookClient = new WebhookClient({ id: webhookId, token: webhookToken });
+    const messageLink = `https://discord.com/channels/${oldMessage.guild.id}/${oldMessage.channel.id}/${oldMessage.id}`;
+    const embed = new EmbedBuilder()
+      .setColor('Blue')
+      .setTitle('<:BluePen:1258523096625971282> **Message Edited**')
+      .setURL(messageLink)
+      .setAuthor({ name: `${oldMessage.author.tag} • ${oldMessage.author.id}`, iconURL: oldMessage.author.displayAvatarURL() })
+      .setDescription(`**Old Content:** \`\`\`${oldMessage.content}\`\`\`\n**New Content:** \`\`\`${newMessage.content}\`\`\``)
+      .addFields(
+        { name: '**Channel**', value: oldMessage.channel.toString(), inline: false },
+        { name: '**Message ID**', value: oldMessage.id, inline: false },
+        { name: '**Message Edited**', value: `<t:${Math.floor(newMessage.editedAt.getTime() / 1000)}:F> (<t:${Math.floor(newMessage.editedAt.getTime() / 1000)}:R>)`, inline: false }
+      );
 
-      const messageLink = `https://discord.com/channels/${message.guild.id}/${message.channel.id}/${message.id}`;
-      const embed = new EmbedBuilder()
-        .setColor('#c66dfd')
-        .setAuthor({ name: message.author.tag, iconURL: message.author.displayAvatarURL() })
-        .setDescription(message.content)
-        .addFields(
-          { name: 'Channel', value: message.channel.toString(), inline: true },
-          { name: 'Message ID', value: message.id, inline: true },
-          { name: 'Time', value: message.createdAt.toISOString(), inline: true }
-        )
-        .setFooter({ text: `Author ID: ${message.author.id}` })
-        .setTimestamp()
-        .setURL(messageLink);
+    await sendLogWithDelay(webhookClient, embed);
+  } catch (error) {
+    console.error('Error sending log message:', error);
+  }
+});
 
-      await webhookClient.send({ embeds: [embed] });
-    } catch (error) {
-      console.error('Error sending log message:', error);
-    }
-  },
-};
+// Log deleted messages
+client.on('messageDelete', async message => {
+  if (!message.guild || !message.author || message.author.bot) return; // Skip messages that are not in guilds, have no author, or are from bots
+
+  const logChannelData = await LogChannel.findOne({ guildId: message.guild.id });
+  if (!logChannelData) return; // Log channel not set
+
+  const { webhookId, webhookToken } = logChannelData;
+
+  try {
+    const webhookClient = new WebhookClient({ id: webhookId, token: webhookToken });
+
+    const embed = new EmbedBuilder()
+      .setColor('Red')
+      .setTitle('<:RedBin:1258521847771955290> **Message Deleted**')
+      .setAuthor({ name: `${message.author.tag} • ${message.author.id}`, iconURL: message.author.displayAvatarURL() })
+      .setDescription(`**Content:** \`\`\`${message.content}\`\`\``)
+      .addFields(
+        { name: '**Channel**', value: message.channel.toString(), inline: false },
+        { name: '**Message ID**', value: message.id, inline: false },
+        { name: '**Message Deleted**', value: `<t:${Math.floor(new Date().getTime() / 1000)}:F> (<t:${Math.floor(new Date().getTime() / 1000)}:R>)`, inline: false }
+      );
+
+    await sendLogWithDelay(webhookClient, embed);
+  } catch (error) {
+    console.error('Error sending log message:', error);
+  }
+});
