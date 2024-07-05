@@ -1,7 +1,7 @@
 {
-    "name": "games",
+    "name": "messager-canary",
     "version": "1.0.0",
-    "description": "A discord games bot.",
+    "description": "A discord messager-canary bot.",
     "main": "index.js",
     "scripts": {
         "test": "echo \"Wow is this a test?\" && exit 1",

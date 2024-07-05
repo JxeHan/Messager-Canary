@@ -235,37 +235,6 @@ async function sendLogWithDelay(webhookClient, embed) {
   }
 }
 
-// Log new messages
-client.on('messageCreate', async message => {
-  if (!message.guild || message.author?.bot) return; // Skip messages that are not in guilds or from bots
-  
-  const logChannelData = await LogChannel.findOne({ guildId: message.guild.id });
-  if (!logChannelData) return; // Log channel not set
-
-  const { webhookId, webhookToken } = logChannelData;
-
-  try {
-    const webhookClient = new WebhookClient({ id: webhookId, token: webhookToken });
-
-    const messageLink = `https://discord.com/channels/${message.guild.id}/${message.channel.id}/${message.id}`;
-    const embed = new EmbedBuilder()
-      .setColor('Green')
-      .setTitle('<:GreenMessage:1258522349645336586> **Message Created**')
-      .setURL(messageLink)
-      .setAuthor({ name: `${message.author.tag} • ${message.author.id}`, iconURL: message.author.displayAvatarURL() })
-      .setDescription(`**Content:** \`\`\`${message.content}\`\`\``)
-      .addFields(
-        { name: '**Channel**', value: message.channel.toString(), inline: false },
-        { name: '**Message ID**', value: message.id, inline: false },
-        { name: '**Message Sent**', value: `<t:${Math.floor(message.createdAt.getTime() / 1000)}:F> (<t:${Math.floor(message.createdAt.getTime() / 1000)}:R>)`, inline: false }
-      );
-
-    await sendLogWithDelay(webhookClient, embed);
-  } catch (error) {
-    console.error('Error sending log message:', error);
-  }
-});
-
 // Log edited messages
 client.on('messageUpdate', async (oldMessage, newMessage) => {
   if (!oldMessage.guild || oldMessage.author?.bot || oldMessage.content === newMessage.content) return; // Skip messages that are not in guilds, from bots, or if content didn't change
